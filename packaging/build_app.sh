@@ -17,6 +17,9 @@ echo "==> SnipReader $VERSION"
 echo "==> cargo build --release"
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 
+echo "==> text recognition helper (Swift, VisionKit Live Text)"
+swiftc -O -target "$(uname -m)-apple-macos13.0" "$PKG/ocr-helper/main.swift" -o "$WORK/snipreader-ocr"
+
 echo "==> icon"
 swift "$PKG/make_icon.swift" "$WORK/icon_1024.png" >/dev/null
 ICONSET="$WORK/AppIcon.iconset"
@@ -32,6 +35,7 @@ echo "==> bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/target/release/snipreader" "$APP/Contents/MacOS/snipreader"
+cp "$WORK/snipreader-ocr" "$APP/Contents/MacOS/snipreader-ocr"
 cp "$WORK/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 sed "s/__VERSION__/$VERSION/g" "$PKG/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
@@ -49,11 +53,15 @@ if [[ "$IDENTITY" == "-" ]]; then
 else
   echo "==> sign ($(security find-identity -v -p codesigning | grep "$IDENTITY" | sed 's/.*"\(.*\)"/\1/' || echo "$IDENTITY"))"
 fi
+# The helper is signed first (inside out), then the app around it.
 if security find-identity -v -p codesigning 2>/dev/null | grep "$IDENTITY" | grep -q "Developer ID Application"; then
   # For distribution: hardened runtime + secure timestamp (both required by notarization).
+  codesign --force --options runtime --timestamp \
+    --sign "$IDENTITY" --identifier com.sanzhar.snipreader.ocr "$APP/Contents/MacOS/snipreader-ocr"
   codesign --force --options runtime --timestamp --entitlements "$PKG/SnipReader.entitlements" \
     --sign "$IDENTITY" --identifier com.sanzhar.snipreader "$APP"
 else
+  codesign --force --timestamp=none --sign "$IDENTITY" --identifier com.sanzhar.snipreader.ocr "$APP/Contents/MacOS/snipreader-ocr"
   codesign --force --timestamp=none --sign "$IDENTITY" --identifier com.sanzhar.snipreader "$APP"
 fi
 codesign --verify --strict "$APP"

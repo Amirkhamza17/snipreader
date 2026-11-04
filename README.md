@@ -53,7 +53,7 @@ Prefer to build it yourself? See below, it takes a minute.
 
 ### Build from source (Apple silicon or Intel)
 
-**Requirements:** macOS 11 or later, [Rust](https://rustup.rs), and the Xcode Command Line Tools (`xcode-select --install`).
+**Requirements:** macOS 11 or later (Live Text needs macOS 13), [Rust](https://rustup.rs), and the Xcode Command Line Tools (`xcode-select --install`, for `swiftc`).
 
 ```bash
 git clone https://github.com/Amirkhamza17/snipreader.git
@@ -74,8 +74,8 @@ To run it straight from the source tree while developing: `cargo run`.
 ## How it works
 
 1. A global shortcut (or the menu bar) starts `/usr/sbin/screencapture` in interactive mode.
-2. The selected area goes to Apple Vision (`VNRecognizeTextRequest`, or `VNDetectBarcodesRequest` for codes). Recognition runs in a short-lived helper copy of the app, so Vision's models never stay in memory after a capture.
-3. Recognized lines are sorted into reading order and joined (`src/layout.rs`), then copied with `pbcopy`.
+2. The selected area goes to **Live Text** (VisionKit's `ImageAnalyzer`) through a small Swift helper, `snipreader-ocr` (`packaging/ocr-helper`). Live Text uses the models macOS keeps ready for Photos and Safari, so even the first capture after a long break takes well under a second. (Plain Vision first has macOS prepare its models for the app, 30–60 s, after install and again every few hours.) On macOS 11–12, or if Live Text fails, SnipReader falls back to Vision (`VNRecognizeTextRequest`) in a short-lived helper copy of itself, kept prepared in the background. QR and bar codes use `VNDetectBarcodesRequest`.
+3. The text is joined according to Keep Line Breaks (`src/layout.rs`), then copied with `pbcopy`.
 4. A small HUD confirms the result. It is left out of screenshots, so it never ends up in a capture.
 
 At rest, with the window closed, SnipReader uses about 60 MB of memory and no CPU.
@@ -87,7 +87,7 @@ At rest, with the window closed, SnipReader uses about 60 MB of memory and no CP
 | `src/ui.rs` | Main window and HUD drawing |
 | `src/onboarding.rs` | The first-launch welcome guide |
 | `src/prefs.rs` | Preferences window |
-| `src/ocr.rs` | Apple Vision text and code recognition, helper process |
+| `src/ocr.rs` | Text and code recognition: Live Text helper first, Vision fallback |
 | `src/layout.rs` | Reading order, paragraphs, line joining |
 | `src/system.rs` | macOS glue: screen capture, clipboard, speech, links, windows |
 | `src/keys.rs` / `src/tray.rs` | Shortcuts / menu bar icon and menu |

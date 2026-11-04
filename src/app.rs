@@ -139,7 +139,7 @@ pub struct Job {
 pub enum JobResult {
     /// The screen grab is done and recognition has started (shows the loading HUD).
     Working(Mode),
-    Text { lines: Vec<crate::layout::Line>, job: Job, area: Option<String> },
+    Text { body: ocr::Recognized, job: Job, area: Option<String> },
     Codes { codes: Vec<String>, area: Option<String> },
     Canceled,
     Failed(String),
@@ -350,7 +350,7 @@ impl App {
         }
         let testing = ["SNIPREADER_SELFTEST", "SNIPREADER_TEST_AREA"].iter().any(|v| std::env::var(v).is_ok());
         if app.screenshot.is_none() && std::env::var("SNIPREADER_SELFTEST").is_err() {
-            ocr::warm_up(); // prepares Vision for a new build in the background
+            ocr::warm_up(); // prepares Vision in the background when Live Text isn't available
         }
         app.welcome_open = !app.s.onboarded && app.screenshot.is_none() && !testing;
         // SNIPREADER_WELCOME_PAGE=n opens the guide at page n (for checking its look).
@@ -528,8 +528,8 @@ impl App {
             let p = path.to_string_lossy().to_string();
             let own_grab = job.file.is_none();
             let res = match job.mode {
-                Mode::Text => match ocr::recognize_lines_isolated(&p, &opts) {
-                    Ok(lines) => JobResult::Text { lines, job, area },
+                Mode::Text => match ocr::recognize_text(&p, &opts) {
+                    Ok(body) => JobResult::Text { body, job, area },
                     Err(e) => JobResult::Failed(e),
                 },
                 Mode::Code => match ocr::read_codes_isolated(&p) {
@@ -579,13 +579,18 @@ impl App {
                 self.status_note = e;
                 self.show_hud(HudKind::Error, "Capture Text Failed", "See the note below");
             }
-            JobResult::Text { lines, job, area } => {
+            JobResult::Text { body, job, area } => {
                 if area.is_some() {
                     self.s.last_area = area;
                 }
-                let mut lines: Vec<_> = lines.into_iter().filter(|l| !l.text.trim().is_empty()).collect();
-                crate::layout::sort_lines(&mut lines);
-                let (with_breaks, without) = crate::layout::join(&lines);
+                let (with_breaks, without) = match body {
+                    ocr::Recognized::Transcript(t) => crate::layout::join_transcript(&t),
+                    ocr::Recognized::Lines(lines) => {
+                        let mut lines: Vec<_> = lines.into_iter().filter(|l| !l.text.trim().is_empty()).collect();
+                        crate::layout::sort_lines(&mut lines);
+                        crate::layout::join(&lines)
+                    }
+                };
                 let text = if job.keep_breaks { with_breaks } else { without };
                 if text.is_empty() {
                     self.show_hud(HudKind::Empty, "No Text Detected", "Try a larger area");

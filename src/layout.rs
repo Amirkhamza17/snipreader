@@ -87,6 +87,47 @@ pub fn join(lines: &[Line]) -> (String, String) {
     (clean(&with_breaks, false), clean(&without, true))
 }
 
+/// Both texts from Live Text's transcript, which has no line boxes: (with line breaks,
+/// without). Live Text already puts lines that wrap inside a paragraph together; without
+/// line breaks, the remaining lines of a block are joined with spaces (a hyphen at a line
+/// end before a lowercase start is joined back into one word), and blank lines stay
+/// paragraph breaks.
+pub fn join_transcript(t: &str) -> (String, String) {
+    let lines: Vec<&str> = t.lines().map(|l| l.trim()).collect();
+    // With line breaks: as recognized, at most one blank line in a row, no edge blanks.
+    let mut keep: Vec<&str> = Vec::new();
+    for l in &lines {
+        if l.is_empty() && keep.last().map_or(true, |p| p.is_empty()) {
+            continue;
+        }
+        keep.push(l);
+    }
+    while keep.last().is_some_and(|l| l.is_empty()) {
+        keep.pop();
+    }
+    let with_breaks = keep.join("\n");
+    // Without: paragraphs (split at blank lines) on their own line, lines inside joined.
+    let mut paragraphs: Vec<String> = Vec::new();
+    for block in with_breaks.split("\n\n") {
+        let mut p = String::new();
+        for l in block.lines() {
+            if p.is_empty() {
+                p.push_str(l);
+            } else if p.ends_with('-') && l.chars().next().is_some_and(|c| c.is_lowercase()) {
+                p.pop();
+                p.push_str(l);
+            } else {
+                p.push(' ');
+                p.push_str(l);
+            }
+        }
+        if !p.is_empty() {
+            paragraphs.push(p);
+        }
+    }
+    (clean(&with_breaks, false), clean(&paragraphs.join("\n"), false))
+}
+
 /// Final clean-up: "  " → " ", then the hyphen marker.
 fn clean(s: &str, rejoin_hyphens: bool) -> String {
     let mut out = s.to_string();
@@ -134,6 +175,16 @@ mod tests {
             sort_lines(&mut v);
             assert_eq!(v.len(), 32);
         }
+    }
+
+    #[test]
+    fn joins_live_text() {
+        let t = "Title\n\n\nFirst line of a para-\ngraph goes on\nand ends.\n\nNext   block\n";
+        let (keep, flat) = join_transcript(t);
+        assert_eq!(keep, "Title\n\nFirst line of a para-\ngraph goes on\nand ends.\n\nNext block");
+        assert_eq!(flat, "Title\nFirst line of a paragraph goes on and ends.\nNext block");
+        assert_eq!(join_transcript(""), (String::new(), String::new()));
+        assert_eq!(join_transcript("\n \n"), (String::new(), String::new()));
     }
 
     #[test]

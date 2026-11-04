@@ -265,6 +265,11 @@ fn mark_ready() {
 /// Reads the "ready" mark; if this build isn't prepared yet, prepares it on a background
 /// thread. Returns at once.
 pub fn warm_up() {
+    if live_text_possible() {
+        // Captures use Live Text, which needs no preparation; keep the Mac idle.
+        READY.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
     let ready = matches!((ready_file().and_then(|f| std::fs::read_to_string(f).ok()), build_id()), (Some(a), Some(b)) if a == b);
     if ready {
         READY.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -312,19 +317,35 @@ fn helper_timeout() -> std::time::Duration {
 /// recognizes in-process). A crash is not retried in-process: whatever crashed the helper
 /// (a broken image, say) would take the app down with it.
 fn run_helper(args: &[&str]) -> Option<Result<String, String>> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
     let _one_at_a_time = HELPER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Decided once, at the start: long while this build may still be preparing.
     let limit = helper_timeout();
     let exe = std::env::current_exe().ok()?;
-    let mut child = Command::new(exe)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    // Read the pipes on their own threads so a large result can't block the helper.
+    let run = run_with_limit(&exe, args, limit)?;
+    match run.code {
+        Some(0) => {
+            mark_ready_once();
+            Some(Ok(run.stdout))
+        }
+        Some(1) => Some(Err(run.stderr)),
+        _ if run.timed_out => Some(Err("Text recognition took too long and was stopped".into())),
+        _ => Some(Err("Text recognition stopped unexpectedly".into())),
+    }
+}
+
+struct Run {
+    code: Option<i32>,
+    timed_out: bool,
+    stdout: String,
+    stderr: String,
+}
+
+/// Runs a program with a time limit, reading its output on separate threads (a large
+/// result can't block it). `None` only when it could not be started.
+fn run_with_limit(program: &std::path::Path, args: &[&str], limit: std::time::Duration) -> Option<Run> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
     let mut out_pipe = child.stdout.take()?;
     let mut err_pipe = child.stderr.take()?;
     let out_t = std::thread::spawn(move || {
@@ -338,28 +359,76 @@ fn run_helper(args: &[&str]) -> Option<Result<String, String>> {
         s
     });
     let started = std::time::Instant::now();
-    let status = loop {
+    let mut timed_out = false;
+    let code = loop {
         match child.try_wait() {
-            Ok(Some(st)) => break st,
+            Ok(Some(st)) => break st.code(),
             Ok(None) if started.elapsed() > limit => {
+                timed_out = true;
                 let _ = child.kill();
                 let _ = child.wait();
-                return Some(Err("Text recognition took too long and was stopped".into()));
+                break None;
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
-            Err(e) => return Some(Err(e.to_string())),
+            Err(_) => break None,
         }
     };
-    let out = out_t.join().unwrap_or_default();
-    let err = err_t.join().unwrap_or_default();
-    if status.success() {
-        mark_ready_once();
-        Some(Ok(String::from_utf8_lossy(&out).into_owned()))
-    } else if status.code() == Some(1) {
-        Some(Err(String::from_utf8_lossy(&err).trim().to_string()))
-    } else {
-        Some(Err("Text recognition stopped unexpectedly".into()))
+    Some(Run {
+        code,
+        timed_out,
+        stdout: String::from_utf8_lossy(&out_t.join().unwrap_or_default()).into_owned(),
+        stderr: String::from_utf8_lossy(&err_t.join().unwrap_or_default()).trim().to_string(),
+    })
+}
+
+// ---------- Live Text (VisionKit), the first choice ----------
+//
+// `snipreader-ocr` (packaging/ocr-helper, Swift) reads text with VisionKit's ImageAnalyzer,
+// which uses the models macOS keeps ready for Live Text: well under a second even right
+// after a long break, where plain Vision may first spend a minute preparing (see above).
+// It gives the text, not line boxes, so line joining works on the text itself.
+
+/// What recognition produced: lines with their boxes (Vision) or finished text (Live Text).
+pub enum Recognized {
+    Lines(Vec<Line>),
+    Transcript(String),
+}
+
+static LIVE_TEXT_MISSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn live_text_helper() -> Option<std::path::PathBuf> {
+    let p = std::env::current_exe().ok()?.with_file_name("snipreader-ocr");
+    p.exists().then_some(p)
+}
+
+/// Can Live Text be used here (helper present, macOS 13 or later)?
+pub fn live_text_possible() -> bool {
+    !LIVE_TEXT_MISSING.load(std::sync::atomic::Ordering::Relaxed) && live_text_helper().is_some() && macos_major() >= 13
+}
+
+#[cfg(target_os = "macos")]
+fn macos_major() -> isize {
+    objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion().majorVersion
+}
+#[cfg(not(target_os = "macos"))]
+fn macos_major() -> isize {
+    0
+}
+
+/// Live Text first; Vision (in its helper) if Live Text is unavailable or fails.
+pub fn recognize_text(path: &str, o: &RecognizeOptions) -> Result<Recognized, String> {
+    if live_text_possible() {
+        if let Some(helper) = live_text_helper() {
+            let auto = if o.auto_detect_language { "1" } else { "0" };
+            match run_with_limit(&helper, &[path, &o.language, auto], std::time::Duration::from_secs(30)) {
+                Some(Run { code: Some(0), stdout, .. }) => return Ok(Recognized::Transcript(stdout)),
+                Some(Run { code: Some(3), .. }) => LIVE_TEXT_MISSING.store(true, std::sync::atomic::Ordering::Relaxed),
+                Some(r) => crate::app::trace(&format!("live text failed ({:?}): {}; using Vision", r.code, r.stderr)),
+                None => crate::app::trace("live text helper did not start; using Vision"),
+            }
+        }
     }
+    recognize_lines_isolated(path, o).map(Recognized::Lines)
 }
 
 /// A successful recognition also means this build is prepared.
