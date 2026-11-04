@@ -1,11 +1,13 @@
 #!/bin/zsh
-# Builds dist/SnipReader.app: release binary + Info.plist + icon, ad-hoc signed.
+# Builds build.noindex/SnipReader.app: release binary + Info.plist + icon, signed.
+# (".noindex" keeps this build copy out of Spotlight and Launchpad, so only the copy in
+# /Applications shows up there.)
 # Usage (from anywhere): ./packaging/build_app.sh
 set -euo pipefail
 
 ROOT="${0:A:h:h}"           # app/ (this script lives in app/packaging)
 PKG="$ROOT/packaging"
-APP="$ROOT/dist/SnipReader.app"
+APP="$ROOT/build.noindex/SnipReader.app"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -47,7 +49,13 @@ if [[ "$IDENTITY" == "-" ]]; then
 else
   echo "==> sign ($(security find-identity -v -p codesigning | grep "$IDENTITY" | sed 's/.*"\(.*\)"/\1/' || echo "$IDENTITY"))"
 fi
-codesign --force --timestamp=none --sign "$IDENTITY" --identifier com.sanzhar.snipreader "$APP"
+if security find-identity -v -p codesigning 2>/dev/null | grep "$IDENTITY" | grep -q "Developer ID Application"; then
+  # For distribution: hardened runtime + secure timestamp (both required by notarization).
+  codesign --force --options runtime --timestamp --entitlements "$PKG/SnipReader.entitlements" \
+    --sign "$IDENTITY" --identifier com.sanzhar.snipreader "$APP"
+else
+  codesign --force --timestamp=none --sign "$IDENTITY" --identifier com.sanzhar.snipreader "$APP"
+fi
 codesign --verify --strict "$APP"
 
 echo "==> done: $APP"

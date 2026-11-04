@@ -43,15 +43,13 @@ A short guide walks through the one permission SnipReader needs and how to use i
 
 1. Download `SnipReader-<version>-arm64.dmg` from [Releases](https://github.com/Amirkhamza17/snipreader/releases).
 2. Open it and drag **SnipReader** onto **Applications**.
-3. Open SnipReader from Applications.
+3. Open SnipReader from Applications. The welcome guide helps you allow Screen Recording.
 
-SnipReader is not notarized by Apple, so the first time macOS says it can't verify the developer. To open it anyway:
+The app is signed with a Developer ID and notarized by Apple, so it opens like any other app.
 
-- **macOS 15 and later:** click *Done*, then go to *System Settings → Privacy & Security*, scroll down and click **Open Anyway** next to SnipReader.
-- **macOS 14 and earlier:** right-click SnipReader in Applications, choose **Open**, then **Open** again.
-- Or in Terminal: `xattr -dr com.apple.quarantine /Applications/SnipReader.app`
+The first capture after installing can take up to a minute while macOS prepares text recognition for the app (once only; SnipReader starts this in the background at launch).
 
-Prefer not to trust a download? Build it yourself, it takes a minute.
+Prefer to build it yourself? See below, it takes a minute.
 
 ### Build from source (Apple silicon or Intel)
 
@@ -61,17 +59,17 @@ Prefer not to trust a download? Build it yourself, it takes a minute.
 git clone https://github.com/Amirkhamza17/snipreader.git
 cd snipreader
 ./packaging/build_app.sh
-cp -R dist/SnipReader.app /Applications/
+cp -R build.noindex/SnipReader.app /Applications/
 ```
 
-`build_app.sh` builds a release binary, draws the app icon, assembles `dist/SnipReader.app` and signs it:
+`build_app.sh` builds a release binary, draws the app icon, assembles `build.noindex/SnipReader.app` (a folder Spotlight skips, so the build copy never shows up next to the installed one) and signs it:
 
 - with your **Apple Development** certificate if you have one (macOS then keeps the Screen Recording permission across rebuilds), or
 - **ad-hoc** otherwise (macOS asks for the permission again after each rebuild). Pick a certificate with `SIGN_IDENTITY="<name or SHA-1>"`.
 
 To run it straight from the source tree while developing: `cargo run`.
 
-`./packaging/make_dmg.sh` builds the release disk image (`dist/SnipReader-<version>-<arch>.dmg`), signed ad-hoc and with source paths stripped of the builder's home folder.
+`./packaging/make_dmg.sh` builds the release disk image (`dist/SnipReader-<version>-<arch>.dmg`) with source paths stripped of the builder's home folder. With a *Developer ID Application* certificate and a `notarytool` keychain profile (see the comments in the script) it signs with hardened runtime, notarizes and staples the image; otherwise it signs ad-hoc.
 
 ## How it works
 

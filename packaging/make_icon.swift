@@ -36,12 +36,24 @@ func rect(_ x: Double, _ y: Double, _ w: Double, _ h: Double) -> NSRect {
     NSRect(x: body.minX + x * unit, y: body.maxY - (y + h) * unit, width: w * unit, height: h * unit)
 }
 NSColor.white.setFill()
-let (a, b, l, t) = (6.0, 30.0, 8.0, 2.4)
+// Selection corners: each one a single stroke with a rounded bend and round ends.
+func pt(_ x: Double, _ y: Double) -> NSPoint {
+    NSPoint(x: body.minX + x * unit, y: body.maxY - y * unit)
+}
+let (a, b, l, t, bend) = (7.2, 28.8, 7.0, 2.4, 3.2)
+NSColor.white.setStroke()
 for (cx, cy, dx, dy) in [(a, a, 1.0, 1.0), (b, a, -1.0, 1.0), (a, b, 1.0, -1.0), (b, b, -1.0, -1.0)] {
-    let hx = dx > 0 ? cx : cx - l, hy = dy > 0 ? cy : cy - t
-    NSBezierPath(roundedRect: rect(hx, hy, l, t), xRadius: unit, yRadius: unit).fill()
-    let vx = dx > 0 ? cx : cx - t, vy = dy > 0 ? cy : cy - l
-    NSBezierPath(roundedRect: rect(vx, vy, t, l), xRadius: unit, yRadius: unit).fill()
+    let corner = NSBezierPath()
+    corner.lineWidth = t * unit
+    corner.lineCapStyle = .round
+    corner.lineJoinStyle = .round
+    corner.move(to: pt(cx + dx * l, cy))                 // end of the horizontal arm
+    corner.line(to: pt(cx + dx * bend, cy))
+    corner.curve(to: pt(cx, cy + dy * bend),             // the rounded bend
+                 controlPoint1: pt(cx + dx * bend * 0.45, cy),
+                 controlPoint2: pt(cx, cy + dy * bend * 0.45))
+    corner.line(to: pt(cx, cy + dy * l))                 // end of the vertical arm
+    corner.stroke()
 }
 NSBezierPath(roundedRect: rect(11, 13.5, 14, 3), xRadius: 1.5 * unit, yRadius: 1.5 * unit).fill()
 NSBezierPath(roundedRect: rect(11, 19.5, 9, 3), xRadius: 1.5 * unit, yRadius: 1.5 * unit).fill()

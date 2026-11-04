@@ -12,42 +12,61 @@ pub fn app_icon(ui: &mut egui::Ui, size: f32) {
 /// The app icon (gradient rounded square, selection corners, two text lines) in `rect`.
 pub fn paint_app_icon(p: &egui::Painter, rect: egui::Rect) {
     let size = rect.width();
-    // Gradient rounded square, drawn in code.
-    let top = Color32::from_rgb(0x3A, 0x8D, 0xFF);
-    let bottom = Color32::from_rgb(0x58, 0x3B, 0xE0);
-    let steps = 12;
+    // Gradient rounded square, same colours as the Dock icon. The gradient is one mesh in
+    // the rounded shape (horizontal bands used to square off the corners); an anti-aliased
+    // fill underneath keeps the edge smooth.
+    let top = Color32::from_rgb(77, 158, 255);
+    let bottom = Color32::from_rgb(26, 92, 230);
     let r = size * 0.22;
-    p.rect_filled(rect, Rounding::same(r), bottom);
-    for i in 0..steps {
-        let t = i as f32 / steps as f32;
-        let c = lerp(top, bottom, t);
-        let y0 = rect.top() + rect.height() * t;
-        let band = egui::Rect::from_min_max(
-            egui::pos2(rect.left(), y0),
-            egui::pos2(rect.right(), y0 + rect.height() / steps as f32 + 0.5),
-        );
-        let rounding = if i == 0 {
-            Rounding { nw: r, ne: r, sw: 0.0, se: 0.0 }
-        } else if i == steps - 1 {
-            Rounding { nw: 0.0, ne: 0.0, sw: r, se: r }
-        } else {
-            Rounding::ZERO
-        };
-        p.rect_filled(band, rounding, c);
+    p.rect_filled(rect, Rounding::same(r), lerp(top, bottom, 0.5));
+    let inner = rect.shrink(0.5);
+    let ri = (r - 0.5).max(0.0);
+    let mut outline = Vec::new();
+    for (cx, cy, a0) in [
+        (inner.right() - ri, inner.top() + ri, -90.0_f32),
+        (inner.right() - ri, inner.bottom() - ri, 0.0),
+        (inner.left() + ri, inner.bottom() - ri, 90.0),
+        (inner.left() + ri, inner.top() + ri, 180.0),
+    ] {
+        for i in 0..=8 {
+            let a = (a0 + 90.0 * i as f32 / 8.0).to_radians();
+            outline.push(egui::pos2(cx + ri * a.cos(), cy + ri * a.sin()));
+        }
     }
+    let mut mesh = egui::epaint::Mesh::default();
+    let shade = |y: f32| lerp(top, bottom, ((y - rect.top()) / rect.height()).clamp(0.0, 1.0));
+    mesh.colored_vertex(rect.center(), shade(rect.center().y));
+    for q in &outline {
+        mesh.colored_vertex(*q, shade(q.y));
+    }
+    let n = outline.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    p.add(egui::Shape::mesh(mesh));
     // Selection corners + text lines.
     let s = Stroke::new(size * 0.06, Color32::WHITE);
     let inset = size * 0.22;
     let l = size * 0.18;
     let a = rect.shrink(inset);
+    // Each selection corner: arm, rounded bend, arm, with round ends (like the Dock icon).
+    let bend = l * 0.45;
     for (c, dx, dy) in [
         (a.left_top(), 1.0, 1.0),
         (a.right_top(), -1.0, 1.0),
         (a.left_bottom(), 1.0, -1.0),
         (a.right_bottom(), -1.0, -1.0),
     ] {
-        p.line_segment([c, c + Vec2::new(l * dx, 0.0)], s);
-        p.line_segment([c, c + Vec2::new(0.0, l * dy)], s);
+        let centre = c + Vec2::new(bend * dx, bend * dy);
+        let mut pts = vec![c + Vec2::new(l * dx, 0.0)];
+        for i in 0..=8 {
+            let t = i as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
+            pts.push(centre + Vec2::new(-t.sin() * bend * dx, -t.cos() * bend * dy));
+        }
+        pts.push(c + Vec2::new(0.0, l * dy));
+        p.circle_filled(pts[0], s.width / 2.0, s.color);
+        p.circle_filled(*pts.last().unwrap(), s.width / 2.0, s.color);
+        p.add(egui::Shape::line(pts, s));
     }
     let ls = Stroke::new(size * 0.05, Color32::from_white_alpha(230));
     let cx = a.center();

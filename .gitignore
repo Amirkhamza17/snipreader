@@ -1,6 +1,7 @@
 # Build output
 /target/
 /dist/
+/build.noindex/
 
 # macOS
 .DS_Store

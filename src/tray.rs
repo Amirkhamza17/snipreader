@@ -47,40 +47,73 @@ fn accel(s: &Settings, a: Action) -> Option<Accelerator> {
     Some(Accelerator::new(Some(m), code))
 }
 
+/// The menu-bar glyph (a template image: black + alpha, macOS tints it): selection corners
+/// with rounded bends and two text lines, all strokes with round ends, anti-aliased.
 fn icon() -> Icon {
-    // Small template-style glyph: selection corners with two text lines.
-    let n = 36usize;
-    let mut px = vec![0u8; n * n * 4];
-    let mut put = |x: usize, y: usize| {
-        if x < n && y < n {
-            let i = (y * n + x) * 4;
-            px[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+    Icon::from_rgba(icon_pixels(), ICON_SIZE as u32, ICON_SIZE as u32).expect("icon")
+}
+
+const ICON_SIZE: usize = 36;
+
+fn icon_pixels() -> Vec<u8> {
+    const N: usize = ICON_SIZE;
+    const W: f32 = 3.0; // stroke width in pixels
+    // Centre lines of the strokes, in pixels.
+    let mut paths: Vec<Vec<(f32, f32)>> = Vec::new();
+    let (a, b, arm, bend) = (5.5_f32, 30.5_f32, 8.0_f32, 4.0_f32);
+    for (cx, cy, dx, dy) in [(a, a, 1.0, 1.0), (b, a, -1.0, 1.0), (a, b, 1.0, -1.0), (b, b, -1.0, -1.0)] {
+        let mut pts = vec![(cx + dx * arm, cy)];
+        let (ox, oy) = (cx + dx * bend, cy + dy * bend); // centre of the bend
+        for i in 0..=8 {
+            let t = i as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
+            pts.push((ox - dx * bend * t.sin(), oy - dy * bend * t.cos()));
         }
+        pts.push((cx, cy + dy * arm));
+        paths.push(pts);
+    }
+    paths.push(vec![(12.5, 15.5), (24.0, 15.5)]);
+    paths.push(vec![(12.5, 21.5), (19.5, 21.5)]);
+
+    // Distance from a point to a segment.
+    let dist = |px: f32, py: f32, (x1, y1): (f32, f32), (x2, y2): (f32, f32)| {
+        let (vx, vy) = (x2 - x1, y2 - y1);
+        let len2 = vx * vx + vy * vy;
+        let t = if len2 > 0.0 { (((px - x1) * vx + (py - y1) * vy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let (qx, qy) = (x1 + t * vx - px, y1 + t * vy - py);
+        (qx * qx + qy * qy).sqrt()
     };
-    let (a, b, l, t) = (4usize, 31usize, 9usize, 3usize);
-    for k in 0..l {
-        for w in 0..t {
-            for (cx, cy, dx, dy) in [(a, a, 1i32, 1i32), (b, a, -1, 1), (a, b, 1, -1), (b, b, -1, -1)] {
-                let x1 = (cx as i32 + dx * k as i32) as usize;
-                let y1 = (cy as i32 + dy * w as i32) as usize;
-                put(x1, y1);
-                let x2 = (cx as i32 + dx * w as i32) as usize;
-                let y2 = (cy as i32 + dy * k as i32) as usize;
-                put(x2, y2);
-            }
+    let mut px = vec![0u8; N * N * 4];
+    for y in 0..N {
+        for x in 0..N {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let d = paths
+                .iter()
+                .flat_map(|p| p.windows(2).map(move |s| (s[0], s[1])))
+                .map(|(s0, s1)| dist(fx, fy, s0, s1))
+                .fold(f32::MAX, f32::min);
+            let alpha = (W / 2.0 + 0.5 - d).clamp(0.0, 1.0);
+            px[(y * N + x) * 4 + 3] = (alpha * 255.0).round() as u8;
         }
     }
-    for y in 14..17 {
-        for x in 11..26 {
-            put(x, y);
+    px
+}
+
+#[cfg(test)]
+mod tests {
+    /// The glyph is drawn, symmetric left/right, and anti-aliased (has partial pixels).
+    /// Set SNIPREADER_TRAY_PNG=<file> to also save it for a look.
+    #[test]
+    fn tray_glyph() {
+        let px = super::icon_pixels();
+        let n = super::ICON_SIZE;
+        let alpha = |x: usize, y: usize| px[(y * n + x) * 4 + 3];
+        assert!(px.chunks(4).filter(|p| p[3] == 255).count() > 100);
+        assert!(px.chunks(4).any(|p| p[3] > 0 && p[3] < 255));
+        assert_eq!(alpha(5, 10), alpha(30, 10)); // corner arms mirror
+        if let Ok(path) = std::env::var("SNIPREADER_TRAY_PNG") {
+            image::RgbaImage::from_raw(n as u32, n as u32, px.clone()).unwrap().save(path).unwrap();
         }
     }
-    for y in 20..23 {
-        for x in 11..21 {
-            put(x, y);
-        }
-    }
-    Icon::from_rgba(px, n as u32, n as u32).expect("icon")
 }
 
 impl Tray {
