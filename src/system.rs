@@ -175,6 +175,22 @@ pub fn boost_thread() {
 #[cfg(not(target_os = "macos"))]
 pub fn boost_thread() {}
 
+/// Runs the current thread (and the helpers it starts) at utility priority: background
+/// upkeep that should never compete with what the user is doing.
+#[cfg(target_os = "macos")]
+pub fn low_priority_thread() {
+    extern "C" {
+        fn pthread_set_qos_class_self_np(qos: u32, relative_priority: i32) -> i32;
+    }
+    const QOS_CLASS_UTILITY: u32 = 0x11;
+    unsafe {
+        pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn low_priority_thread() {}
+
 pub fn clipboard_set(text: &str) {
     if let Ok(mut child) = Command::new("/usr/bin/pbcopy")
         .env("LANG", "en_US.UTF-8")

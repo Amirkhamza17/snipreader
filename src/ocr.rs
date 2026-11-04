@@ -216,14 +216,19 @@ pub fn helper_main(args: &[String]) -> i32 {
     }
 }
 
-// ---------- first-run preparation ----------
+// ---------- keeping Vision prepared ----------
 //
-// The first time a new build of the app uses Vision, macOS compiles the recognition
-// models for the Neural Engine (ANECompilerService): about a minute, once per build
-// (after install and after every update). Until then a capture would sit there. So the
-// app "warms up" in the background right after launch by recognizing a blank image, and
-// remembers which build is ready. Until it is ready, captures get a long time limit and
-// a "Preparing…" message instead of failing after 30 seconds.
+// Before Vision can recognize text for an app, macOS prepares its models for that app
+// (cached in ~/Library/Caches/<bundle id>/com.apple.e5rt.e5bundlecache): 30–60 seconds of
+// work, whichever compute device is used. It happens after install and every update, and
+// macOS also throws the prepared models away again after some hours. A capture that ran
+// into it used to sit there and was cut off at 30 s, which threw that work away too.
+// So: the app prepares Vision in the background right after launch and again every
+// WARM_EVERY (cheap when nothing needs preparing), never cuts a recognition short while
+// it may be preparing, and the HUD says so when a recognition takes long.
+
+/// How often the background warm-up runs (keeps the prepared models from going stale).
+const WARM_EVERY: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
 static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -263,30 +268,43 @@ pub fn warm_up() {
     let ready = matches!((ready_file().and_then(|f| std::fs::read_to_string(f).ok()), build_id()), (Some(a), Some(b)) if a == b);
     if ready {
         READY.store(true, std::sync::atomic::Ordering::Relaxed);
-        return;
     }
     std::thread::spawn(|| {
-        crate::app::trace("warm-up start");
-        let path = std::env::temp_dir().join("snipreader").join("warm-up.png");
-        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("/tmp")));
-        let blank = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 255]));
-        if blank.save(&path).is_err() {
-            return;
+        // Low priority: this must never compete with what you are doing.
+        crate::system::low_priority_thread();
+        loop {
+            warm_once();
+            std::thread::sleep(WARM_EVERY);
         }
-        let p = path.to_string_lossy().to_string();
-        let ok = matches!(run_helper(&[HELPER_LINES, &p, "en-US", "0", ""]), Some(Ok(_)));
-        let _ = std::fs::remove_file(&path);
-        if ok {
-            mark_ready();
-        }
-        crate::app::trace(if ok { "warm-up done" } else { "warm-up failed" });
     });
 }
 
-/// How long one recognition may take before the helper is stopped: short once Vision is
-/// prepared, long while the first-run preparation may still be going on.
+/// Recognizes a blank image (enough to make macOS prepare everything) and logs how long it
+/// took: a fraction of a second when Vision is prepared, ~a minute when it had to redo it.
+fn warm_once() {
+    let started = std::time::Instant::now();
+    crate::app::trace("warm-up start");
+    let path = std::env::temp_dir().join("snipreader").join("warm-up.png");
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("/tmp")));
+    let blank = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 255]));
+    if blank.save(&path).is_err() {
+        return;
+    }
+    let p = path.to_string_lossy().to_string();
+    let ok = matches!(run_helper(&[HELPER_LINES, &p, "en-US", "0", ""]), Some(Ok(_)));
+    let _ = std::fs::remove_file(&path);
+    if ok {
+        mark_ready();
+    }
+    let secs = started.elapsed().as_secs_f32();
+    crate::app::trace(&format!("warm-up {} in {secs:.1}s", if ok { "done" } else { "failed" }));
+}
+
+/// How long one recognition may take before the helper is stopped. Long, because macOS may
+/// be preparing Vision (up to about a minute, at any time); stopping it would only make the
+/// next capture start that work over again.
 fn helper_timeout() -> std::time::Duration {
-    std::time::Duration::from_secs(if is_ready() { 30 } else { 300 })
+    std::time::Duration::from_secs(180)
 }
 
 /// Runs the helper; `Some(Ok(stdout))` on success, `Some(Err(..))` when it ran but failed,

@@ -1047,6 +1047,14 @@ impl eframe::App for App {
         if self.prefs_open {
             crate::prefs::show(self, ctx);
         }
+        // A recognition that takes long is macOS preparing Vision: say so on the HUD.
+        if let Some(h) = &mut self.hud {
+            if h.kind == HudKind::Working && h.subtitle.is_empty() && h.started.elapsed() > Duration::from_millis(2500) {
+                h.title = "Preparing Text Recognition…".into();
+                h.subtitle = "macOS is preparing it, up to a minute".into();
+                trace("HUD: preparing");
+            }
+        }
         if self.welcome_open {
             crate::onboarding::show(self, ctx);
         }
