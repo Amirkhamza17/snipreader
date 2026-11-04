@@ -349,6 +349,9 @@ impl App {
             });
         }
         let testing = ["SNIPREADER_SELFTEST", "SNIPREADER_TEST_AREA"].iter().any(|v| std::env::var(v).is_ok());
+        if app.screenshot.is_none() && std::env::var("SNIPREADER_SELFTEST").is_err() {
+            ocr::warm_up(); // prepares Vision for a new build in the background
+        }
         app.welcome_open = !app.s.onboarded && app.screenshot.is_none() && !testing;
         // SNIPREADER_WELCOME_PAGE=n opens the guide at page n (for checking its look).
         if let Some(n) = std::env::var("SNIPREADER_WELCOME_PAGE").ok().and_then(|v| v.parse().ok()) {
@@ -551,8 +554,14 @@ impl App {
             if !self.busy || showing_working {
                 return;
             }
-            let title = if mode == Mode::Code { "Reading Code…" } else { "Recognizing Text…" };
-            self.show_hud(HudKind::Working, title, "");
+            if ocr::is_ready() {
+                let title = if mode == Mode::Code { "Reading Code…" } else { "Recognizing Text…" };
+                self.show_hud(HudKind::Working, title, "");
+            } else {
+                // First use of a new build: macOS is still preparing Vision (about a minute).
+                self.show_hud(HudKind::Working, "Preparing Text Recognition…", "First run after install, up to a minute");
+            }
+            trace("loading HUD shown");
             return;
         }
         trace("result shown");
@@ -976,7 +985,10 @@ impl eframe::App for App {
         // plays the hotkey after SNIPREADER_TEST_DELAY seconds.
         if std::env::var("SNIPREADER_TEST_AREA").is_ok() {
             if self.frame == 2 {
-                self.hide_window(ctx);
+                // SNIPREADER_TEST_VISIBLE keeps the window open (e.g. behind other windows).
+                if std::env::var("SNIPREADER_TEST_VISIBLE").is_err() {
+                    self.hide_window(ctx);
+                }
                 self.s.last_area = std::env::var("SNIPREADER_TEST_AREA").ok();
             }
             if self.test_trigger.swap(false, Ordering::Relaxed) {

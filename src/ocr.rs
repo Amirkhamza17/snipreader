@@ -216,8 +216,78 @@ pub fn helper_main(args: &[String]) -> i32 {
     }
 }
 
-/// How long one recognition may take before the helper is stopped.
-const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+// ---------- first-run preparation ----------
+//
+// The first time a new build of the app uses Vision, macOS compiles the recognition
+// models for the Neural Engine (ANECompilerService): about a minute, once per build
+// (after install and after every update). Until then a capture would sit there. So the
+// app "warms up" in the background right after launch by recognizing a blank image, and
+// remembers which build is ready. Until it is ready, captures get a long time limit and
+// a "Preparing…" message instead of failing after 30 seconds.
+
+static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One helper at a time: a capture that starts while the warm-up is still running waits
+/// for it (then takes a fraction of a second) instead of compiling the models again.
+static HELPER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Is text recognition prepared for this build (fast from now on)?
+pub fn is_ready() -> bool {
+    READY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Identifies this build: size and modification time of the executable.
+fn build_id() -> Option<String> {
+    let m = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(format!("{} {}", m.len(), t))
+}
+
+fn ready_file() -> Option<std::path::PathBuf> {
+    eframe::storage_dir("SnipReader").map(|d| d.join("ocr-ready.txt"))
+}
+
+fn mark_ready() {
+    READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let (Some(f), Some(id)) = (ready_file(), build_id()) {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(f, id);
+    }
+}
+
+/// Reads the "ready" mark; if this build isn't prepared yet, prepares it on a background
+/// thread. Returns at once.
+pub fn warm_up() {
+    let ready = matches!((ready_file().and_then(|f| std::fs::read_to_string(f).ok()), build_id()), (Some(a), Some(b)) if a == b);
+    if ready {
+        READY.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+    std::thread::spawn(|| {
+        crate::app::trace("warm-up start");
+        let path = std::env::temp_dir().join("snipreader").join("warm-up.png");
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("/tmp")));
+        let blank = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 255]));
+        if blank.save(&path).is_err() {
+            return;
+        }
+        let p = path.to_string_lossy().to_string();
+        let ok = matches!(run_helper(&[HELPER_LINES, &p, "en-US", "0", ""]), Some(Ok(_)));
+        let _ = std::fs::remove_file(&path);
+        if ok {
+            mark_ready();
+        }
+        crate::app::trace(if ok { "warm-up done" } else { "warm-up failed" });
+    });
+}
+
+/// How long one recognition may take before the helper is stopped: short once Vision is
+/// prepared, long while the first-run preparation may still be going on.
+fn helper_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(if is_ready() { 30 } else { 300 })
+}
 
 /// Runs the helper; `Some(Ok(stdout))` on success, `Some(Err(..))` when it ran but failed,
 /// crashed or hung, `None` only when it could not be started at all (then the caller
@@ -226,6 +296,9 @@ const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 fn run_helper(args: &[&str]) -> Option<Result<String, String>> {
     use std::io::Read;
     use std::process::{Command, Stdio};
+    let _one_at_a_time = HELPER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Decided once, at the start: long while this build may still be preparing.
+    let limit = helper_timeout();
     let exe = std::env::current_exe().ok()?;
     let mut child = Command::new(exe)
         .args(args)
@@ -250,7 +323,7 @@ fn run_helper(args: &[&str]) -> Option<Result<String, String>> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
-            Ok(None) if started.elapsed() > HELPER_TIMEOUT => {
+            Ok(None) if started.elapsed() > limit => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Some(Err("Text recognition took too long and was stopped".into()));
@@ -262,11 +335,19 @@ fn run_helper(args: &[&str]) -> Option<Result<String, String>> {
     let out = out_t.join().unwrap_or_default();
     let err = err_t.join().unwrap_or_default();
     if status.success() {
+        mark_ready_once();
         Some(Ok(String::from_utf8_lossy(&out).into_owned()))
     } else if status.code() == Some(1) {
         Some(Err(String::from_utf8_lossy(&err).trim().to_string()))
     } else {
         Some(Err("Text recognition stopped unexpectedly".into()))
+    }
+}
+
+/// A successful recognition also means this build is prepared.
+fn mark_ready_once() {
+    if !is_ready() {
+        mark_ready();
     }
 }
 
