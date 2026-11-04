@@ -39,12 +39,26 @@ A short guide walks through the one permission SnipReader needs and how to use i
 
 ## Install
 
-SnipReader is not notarized yet, so build it yourself (it takes a minute):
+### Download (Apple silicon)
 
-**Requirements:** macOS 11 or later (Apple silicon or Intel), [Rust](https://rustup.rs), and the Xcode Command Line Tools (`xcode-select --install`).
+1. Download `SnipReader-<version>-arm64.dmg` from [Releases](https://github.com/Amirkhamza17/snipreader/releases).
+2. Open it and drag **SnipReader** onto **Applications**.
+3. Open SnipReader from Applications.
+
+SnipReader is not notarized by Apple, so the first time macOS says it can't verify the developer. To open it anyway:
+
+- **macOS 15 and later:** click *Done*, then go to *System Settings → Privacy & Security*, scroll down and click **Open Anyway** next to SnipReader.
+- **macOS 14 and earlier:** right-click SnipReader in Applications, choose **Open**, then **Open** again.
+- Or in Terminal: `xattr -dr com.apple.quarantine /Applications/SnipReader.app`
+
+Prefer not to trust a download? Build it yourself, it takes a minute.
+
+### Build from source (Apple silicon or Intel)
+
+**Requirements:** macOS 11 or later, [Rust](https://rustup.rs), and the Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone https://github.com/<you>/snipreader.git
+git clone https://github.com/Amirkhamza17/snipreader.git
 cd snipreader
 ./packaging/build_app.sh
 cp -R dist/SnipReader.app /Applications/
@@ -56,6 +70,8 @@ cp -R dist/SnipReader.app /Applications/
 - **ad-hoc** otherwise (macOS asks for the permission again after each rebuild). Pick a certificate with `SIGN_IDENTITY="<name or SHA-1>"`.
 
 To run it straight from the source tree while developing: `cargo run`.
+
+`./packaging/make_dmg.sh` builds the release disk image (`dist/SnipReader-<version>-<arch>.dmg`), signed ad-hoc and with source paths stripped of the builder's home folder.
 
 ## How it works
 
@@ -77,7 +93,7 @@ At rest, with the window closed, SnipReader uses about 60 MB of memory and no CP
 | `src/layout.rs` | Reading order, paragraphs, line joining |
 | `src/system.rs` | macOS glue: screen capture, clipboard, speech, links, windows |
 | `src/keys.rs` / `src/tray.rs` | Shortcuts / menu bar icon and menu |
-| `packaging/` | `build_app.sh`, `Info.plist`, icon drawing |
+| `packaging/` | `build_app.sh`, `make_dmg.sh`, `Info.plist`, icon drawing |
 
 ### Diagnostics
 

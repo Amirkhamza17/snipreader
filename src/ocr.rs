@@ -270,10 +270,19 @@ fn run_helper(args: &[&str]) -> Option<Result<String, String>> {
     }
 }
 
+/// Runs the helper, once more if Vision itself reported an error (a rare one-off image
+/// reader error was seen on a first run); a timeout or crash is not retried.
+fn run_helper_retry(args: &[&str]) -> Option<Result<String, String>> {
+    match run_helper(args) {
+        Some(Err(e)) if !e.contains("too long") && !e.contains("unexpectedly") => run_helper(args).or(Some(Err(e))),
+        other => other,
+    }
+}
+
 /// Like `recognize_lines`, but in the helper process (see above).
 pub fn recognize_lines_isolated(path: &str, o: &RecognizeOptions) -> Result<Vec<Line>, String> {
     let auto = if o.auto_detect_language { "1" } else { "0" };
-    match run_helper(&[HELPER_LINES, path, &o.language, auto, &o.custom_words]) {
+    match run_helper_retry(&[HELPER_LINES, path, &o.language, auto, &o.custom_words]) {
         Some(Ok(text)) => Ok(text
             .lines()
             .filter_map(|row| {
@@ -289,7 +298,7 @@ pub fn recognize_lines_isolated(path: &str, o: &RecognizeOptions) -> Result<Vec<
 
 /// Like `read_codes`, but in the helper process (see above).
 pub fn read_codes_isolated(path: &str) -> Result<Vec<String>, String> {
-    match run_helper(&[HELPER_CODES, path]) {
+    match run_helper_retry(&[HELPER_CODES, path]) {
         Some(Ok(text)) => Ok(text.lines().map(unescape).collect()),
         Some(Err(e)) => Err(e),
         None => read_codes(path),
