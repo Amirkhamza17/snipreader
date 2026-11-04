@@ -1,6 +1,6 @@
 [package]
 name = "snipreader"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Grab text from anywhere on your Mac screen: select an area, get the text in your clipboard."
 license = "MIT"
