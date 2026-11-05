@@ -264,10 +264,11 @@ fn mark_ready() {
 
 /// Reads the "ready" mark; if this build isn't prepared yet, prepares it on a background
 /// thread. Returns at once.
-pub fn warm_up() {
+pub fn warm_up(o: &RecognizeOptions) {
+    remember_language(o);
     if live_text_possible() {
-        // Captures use Live Text, which needs no preparation; keep the Mac idle.
         READY.store(true, std::sync::atomic::Ordering::Relaxed);
+        keep_live_text_ready();
         return;
     }
     let ready = matches!((ready_file().and_then(|f| std::fs::read_to_string(f).ok()), build_id()), (Some(a), Some(b)) if a == b);
@@ -415,12 +416,65 @@ fn macos_major() -> isize {
     0
 }
 
+/// Language settings of the last capture, so the warm-up prepares the same model.
+static LANGUAGE: std::sync::Mutex<(String, bool)> = std::sync::Mutex::new((String::new(), false));
+
+fn remember_language(o: &RecognizeOptions) {
+    *LANGUAGE.lock().unwrap_or_else(|e| e.into_inner()) = (o.language.clone(), o.auto_detect_language);
+}
+
+/// macOS drops the compiled Live Text model when nothing has used it for a while (seen after
+/// a night's sleep); the next request then rebuilds it, ~30 s. Read a sample text after the
+/// Mac wakes and every LIVE_TEXT_EVERY, so that happens here and not during a capture.
+/// It costs well under a second when the model is ready.
+const LIVE_TEXT_EVERY: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+fn keep_live_text_ready() {
+    std::thread::spawn(|| {
+        use std::time::{Duration, SystemTime};
+        // The wall clock keeps running while the Mac sleeps, the thread's sleep does not:
+        // a check that comes far later than planned means the Mac just woke up.
+        const TICK: Duration = Duration::from_secs(60);
+        let mut last_warm: Option<SystemTime> = None;
+        let mut last_tick = SystemTime::now();
+        loop {
+            let now = SystemTime::now();
+            let woke = now.duration_since(last_tick).unwrap_or_default() > TICK * 3;
+            let due = last_warm.map_or(true, |t| now.duration_since(t).map_or(true, |d| d >= LIVE_TEXT_EVERY));
+            if woke || due {
+                if woke {
+                    // Give the Mac a moment after waking before adding work.
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+                warm_live_text();
+                last_warm = Some(SystemTime::now());
+            }
+            last_tick = SystemTime::now();
+            std::thread::sleep(TICK);
+        }
+    });
+}
+
+fn warm_live_text() {
+    let Some(helper) = live_text_helper() else { return };
+    let (language, auto) = LANGUAGE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let auto = if auto { "1" } else { "0" };
+    let started = std::time::Instant::now();
+    crate::app::trace("live text warm-up start");
+    let run = run_with_limit(&helper, &["--warm", &language, auto], helper_timeout());
+    let ok = matches!(run, Some(Run { code: Some(0), .. }));
+    crate::app::trace(&format!("live text warm-up {} in {:.1}s", if ok { "done" } else { "failed" }, started.elapsed().as_secs_f32()));
+}
+
 /// Live Text first; Vision (in its helper) if Live Text is unavailable or fails.
 pub fn recognize_text(path: &str, o: &RecognizeOptions) -> Result<Recognized, String> {
+    remember_language(o);
     if live_text_possible() {
         if let Some(helper) = live_text_helper() {
             let auto = if o.auto_detect_language { "1" } else { "0" };
-            match run_with_limit(&helper, &[path, &o.language, auto], std::time::Duration::from_secs(30)) {
+            // Not cut short: a slow Live Text is macOS rebuilding its model (~30 s), and Vision
+            // would then be no faster; stopping it would only throw that work away.
+            match run_with_limit(&helper, &[path, &o.language, auto], helper_timeout()) {
                 Some(Run { code: Some(0), stdout, .. }) => return Ok(Recognized::Transcript(stdout)),
                 Some(Run { code: Some(3), .. }) => LIVE_TEXT_MISSING.store(true, std::sync::atomic::Ordering::Relaxed),
                 Some(r) => crate::app::trace(&format!("live text failed ({:?}): {}; using Vision", r.code, r.stderr)),

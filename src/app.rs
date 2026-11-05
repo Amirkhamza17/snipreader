@@ -350,7 +350,12 @@ impl App {
         }
         let testing = ["SNIPREADER_SELFTEST", "SNIPREADER_TEST_AREA"].iter().any(|v| std::env::var(v).is_ok());
         if app.screenshot.is_none() && std::env::var("SNIPREADER_SELFTEST").is_err() {
-            ocr::warm_up(); // prepares Vision in the background when Live Text isn't available
+            // Keeps text recognition ready in the background (Live Text, or Vision without it).
+            ocr::warm_up(&ocr::RecognizeOptions {
+                language: lang_code(&app.s.language).to_string(),
+                auto_detect_language: app.s.auto_detect_language,
+                custom_words: String::new(),
+            });
         }
         app.welcome_open = !app.s.onboarded && app.screenshot.is_none() && !testing;
         // SNIPREADER_WELCOME_PAGE=n opens the guide at page n (for checking its look).
@@ -362,6 +367,11 @@ impl App {
             app.paste_thread = Some(system::start_paste_watcher(app.paste_watch.clone(), app.pasted.clone(), cc.egui_ctx.clone()));
             app.hotkeys = GlobalHotKeyManager::new().ok();
             app.register_hotkeys();
+        }
+        // Info.plist starts the app as menu-bar-only (LSUIElement); the open window brings
+        // the Dock icon, as it does whenever the window is shown again.
+        if app.window_visible {
+            system::set_dock_icon(true);
         }
         app
     }

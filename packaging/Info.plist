@@ -24,6 +24,10 @@
 	<string>11.0</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<!-- Starts as a menu-bar app; it shows its Dock icon itself while its window is open.
+	     Also keeps the Live Text helper inside the bundle out of the Dock. -->
+	<key>LSUIElement</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
